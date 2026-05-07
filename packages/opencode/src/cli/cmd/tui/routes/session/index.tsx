@@ -58,6 +58,7 @@ import { TodoItem } from "../../component/todo-item"
 import { DialogMessage } from "./dialog-message"
 import type { PromptInfo } from "../../component/prompt/history"
 import { DialogConfirm } from "@tui/ui/dialog-confirm"
+import { DialogPrompt } from "@tui/ui/dialog-prompt"
 import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
@@ -473,6 +474,85 @@ export function Session() {
           modelID: selectedModel.modelID,
           providerID: selectedModel.providerID,
         })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Change working directory",
+      value: "session.change_directory",
+      keybind: "session_change_directory",
+      category: "Session",
+      slash: {
+        name: "cd",
+        aliases: ["chdir", "directory"],
+      },
+      onSelect: async (dialog) => {
+        const current = sync.data.path.directory ?? session()?.directory ?? ""
+        const value = await DialogPrompt.show(dialog, "Change working directory", {
+          placeholder: "Absolute or relative path",
+          value: current,
+        })
+        if (!value) return
+        const trimmed = value.trim()
+        if (!trimmed || trimmed === current) return
+        try {
+          const res = await sdk.fetch(new URL(`/session/${route.sessionID}/directory`, sdk.url), {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ directory: trimmed }),
+          })
+          if (!res.ok) {
+            const text = await res.text().catch(() => res.statusText)
+            throw new Error(text || `HTTP ${res.status}`)
+          }
+          toast.show({ message: `Switched directory to ${trimmed}`, variant: "success" })
+        } catch (error) {
+          toast.show({
+            message: error instanceof Error ? error.message : "Failed to switch directory",
+            variant: "error",
+          })
+        }
+      },
+    },
+    {
+      title: "Show directory history",
+      value: "session.directory_history",
+      keybind: "session_directory_history",
+      category: "Session",
+      slash: {
+        name: "cd-history",
+      },
+      onSelect: async (dialog) => {
+        try {
+          const res = await sdk.fetch(new URL(`/session/${route.sessionID}/directory/history`, sdk.url))
+          if (!res.ok) throw new Error(res.statusText)
+          const entries = (await res.json()) as Array<{
+            from?: { directory: string | null }
+            to: { directory: string }
+            actor: string
+            reason?: string
+            time: { created: number }
+          }>
+          if (entries.length === 0) {
+            toast.show({ message: "No directory changes recorded for this session.", variant: "info" })
+            dialog.clear()
+            return
+          }
+          const summary = entries
+            .map((entry) => {
+              const when = new Date(entry.time.created).toISOString()
+              const fromDir = entry.from?.directory ?? "<unknown>"
+              const reason = entry.reason ? ` — ${entry.reason}` : ""
+              return `[${when}] ${entry.actor}: ${fromDir} → ${entry.to.directory}${reason}`
+            })
+            .join("\n")
+          toast.show({ message: summary, variant: "info", duration: 8000 })
+        } catch (error) {
+          toast.show({
+            message: error instanceof Error ? error.message : "Failed to load directory history",
+            variant: "error",
+          })
+        }
         dialog.clear()
       },
     },

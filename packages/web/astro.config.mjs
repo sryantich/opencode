@@ -256,6 +256,7 @@ export default defineConfig({
             "models",
             "themes",
             "keybinds",
+            "switching-directory",
             "commands",
             "formatters",
             "permissions",

@@ -1,0 +1,99 @@
+---
+title: Switching working directory
+description: Change the working directory for an active session without restarting.
+---
+
+OpenCode lets you swap the working directory of a live session on the fly.
+Use it when a single conversation needs to span more than one project, or when
+you started a session in the wrong folder.
+
+## TUI
+
+Press `<leader>d` (default) or run `/cd` from the command palette. A prompt
+opens with the current path pre-filled — replace it with the destination and
+press <kbd>Enter</kbd>.
+
+After the swap:
+
+- The header re-renders with the new directory.
+- LSP servers, file watchers, MCP servers, plugins, formatters, and the tool
+  registry are torn down and rebuilt against the new directory (powered by
+  `Instance.reload`).
+- A `session.directory_changed` bus event fires so any connected SDK clients
+  refresh.
+
+To review the change history for a session, run `/cd-history` from the command
+palette. Bind it to a key by setting `session_directory_history` in
+`tui.json`.
+
+## HTTP API
+
+The TUI is a thin client over two new routes:
+
+```
+POST /session/:id/directory   { directory: string, reason?: string }
+GET  /session/:id/directory/history
+```
+
+`POST` validates the path, optionally re-parents the session to the new
+project, records the swap in `session_directory_history`, fires
+`session.directory_changed`, and reloads the active `Instance`. `GET` returns
+the ordered list of past changes.
+
+## Agents
+
+The `change_directory` tool lets agents request a swap. It is **off by
+default** — opt in with:
+
+```bash
+export OPENCODE_ENABLE_DIRECTORY_TOOL=1
+```
+
+When enabled, the tool calls `PermissionNext.ask("project.directory_switch", …)`
+before doing anything. With the default `ask` ruleset you'll see an inline
+permission prompt; if your project's permission rules already allow `*` (e.g.
+"approve everything") the swap proceeds without prompting, matching every
+other tool's behaviour.
+
+Per-session rules can scope agent swaps to specific roots:
+
+```json
+{
+  "permission": [
+    { "permission": "project.directory_switch", "pattern": "/Users/me/work/**", "action": "allow" },
+    { "permission": "project.directory_switch", "pattern": "*", "action": "deny" }
+  ]
+}
+```
+
+## Session memory
+
+Every swap is persisted in `session_directory_history` and rendered into the
+system prompt as a `<directory_history>` block. The model sees lines like:
+
+```
+[2026-05-07T21:14:38.711Z] user: /old/path → /new/path — moved to docs repo
+```
+
+This is what unblocks recovery when files appear "missing" — the model can
+see the prior path and rerun reads against it instead of giving up.
+
+## Risks & dependencies
+
+| # | Risk | Mitigation |
+|---|------|------------|
+| R1 | Reload mid-turn | `Session.changeDirectory` refuses if `time.compacting` is set; the agent tool only fires when the agent yields control to ask permission. |
+| R2 | Cross-project re-parenting | Single transaction updates `session.project_id` and `session.directory`; child rows (messages, parts, todos, permissions) stay tied to the session id and are unaffected by SQLite FK semantics. |
+| R3 | Snapshot/revert across project boundaries | Revert/snapshot logic is project-scoped. Reverting after a cross-project swap is unsupported in v1 — use the directory history to navigate manually. |
+| R4 | LSP / watcher leaks | `Instance.reload` already calls `State.dispose(directory)`; smoke-test specifically the LSP server lifecycle when adopting this in production. |
+| R5 | MCP / plugin servers spawned with old `cwd` | They re-init via `Instance.state` slots on reload — verify each `state()` block in `mcp/index.ts` and `plugin/index.ts` rebuilds. |
+| R6 | Path traversal via agent input | Tool resolves `Filesystem.resolve()` and validates `existsSync` + `statSync().isDirectory()`. Restrict via `project.directory_switch` patterns when running untrusted agents. |
+| R7 | Non-git target dirs become `project_id = "global"` | `migrateFromGlobal` only moves rows where `directory !== worktree`, so explicit user-driven swaps into the global project are not auto-migrated back. |
+| R8 | TUI keybind collision | Default `<leader>d` was unused; rebind via `tui.json` if it conflicts with a custom binding. |
+
+## Limitations (v1)
+
+- The agent tool is gated behind `OPENCODE_ENABLE_DIRECTORY_TOOL`.
+- TUI prompt does not yet provide path autocompletion.
+- `Session.revert` is not aware of cross-project boundaries; reverting a
+  session that has crossed projects may yield confusing diffs.
