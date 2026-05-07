@@ -799,6 +799,16 @@ export namespace Config {
       session_unshare: z.string().optional().default("none").describe("Unshare current session"),
       session_interrupt: z.string().optional().default("escape").describe("Interrupt current session"),
       session_compact: z.string().optional().default("<leader>c").describe("Compact the session"),
+      session_change_directory: z
+        .string()
+        .optional()
+        .default("<leader>d")
+        .describe("Switch the working directory for this session"),
+      session_directory_history: z
+        .string()
+        .optional()
+        .default("none")
+        .describe("Show the working-directory change history for this session"),
       messages_page_up: z.string().optional().default("pageup,ctrl+alt+b").describe("Scroll messages up by one page"),
       messages_page_down: z
         .string()

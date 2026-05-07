@@ -5,6 +5,9 @@ import { State } from "./state"
 import { iife } from "@/util/iife"
 import { GlobalBus } from "@/bus/global"
 import { Filesystem } from "@/util/filesystem"
+import { BusEvent } from "@/bus/bus-event"
+import z from "zod"
+import { existsSync, statSync } from "fs"
 
 interface Context {
   directory: string
@@ -112,6 +115,48 @@ export const Instance = {
     emit(directory)
     return await next
   },
+  /**
+   * Validate a target path and switch the active Instance to it.
+   * Disposes & rebuilds Instance.state slots (LSP, watchers, MCP, formatters,
+   * tool registry, plugins, TUI config) so they retarget the new directory.
+   * Emits "instance.directory_changed" via the bus.
+   */
+  async switchDirectory(directory: string) {
+    const target = Filesystem.resolve(directory)
+    if (!existsSync(target)) throw new Error(`Directory does not exist: ${target}`)
+    const stat = statSync(target)
+    if (!stat.isDirectory()) throw new Error(`Path is not a directory: ${target}`)
+
+    const previous = {
+      directory: Instance.directory,
+      worktree: Instance.worktree,
+      project: Instance.project,
+    }
+
+    const { project, sandbox } = await Project.fromDirectory(target)
+    await Instance.reload({ directory: target, project, worktree: sandbox })
+
+    GlobalBus.emit("event", {
+      directory: target,
+      payload: {
+        type: InstanceEvent.DirectoryChanged.type,
+        properties: {
+          from: {
+            directory: previous.directory,
+            worktree: previous.worktree,
+            projectID: previous.project.id,
+          },
+          to: {
+            directory: target,
+            worktree: sandbox,
+            projectID: project.id,
+          },
+        },
+      },
+    })
+
+    return { project, worktree: sandbox, directory: target }
+  },
   async dispose() {
     Log.Default.info("disposing instance", { directory: Instance.directory })
     await State.dispose(Instance.directory)
@@ -149,4 +194,21 @@ export const Instance = {
 
     return disposal.all
   },
+}
+
+const DirectoryChangePayload = z.object({
+  from: z.object({
+    directory: z.string(),
+    worktree: z.string(),
+    projectID: z.string(),
+  }),
+  to: z.object({
+    directory: z.string(),
+    worktree: z.string(),
+    projectID: z.string(),
+  }),
+})
+
+export const InstanceEvent = {
+  DirectoryChanged: BusEvent.define("instance.directory_changed", DirectoryChangePayload),
 }

@@ -10,14 +10,16 @@ import { Flag } from "../flag/flag"
 import { Identifier } from "../id/id"
 import { Installation } from "../installation"
 
-import { Database, NotFoundError, eq, and, or, gte, isNull, desc, like, inArray, lt } from "../storage/db"
+import { Database, NotFoundError, eq, and, or, gte, isNull, desc, asc, like, inArray, lt } from "../storage/db"
 import type { SQL } from "../storage/db"
 import { SessionTable, MessageTable, PartTable } from "./session.sql"
+import { SessionDirectoryHistoryTable } from "./directory-history.sql"
 import { ProjectTable } from "../project/project.sql"
 import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
 import { Instance } from "../project/instance"
+import { Project } from "../project/project"
 import { SessionPrompt } from "./prompt"
 import { fn } from "@/util/fn"
 import { Command } from "../command"
@@ -209,6 +211,22 @@ export namespace Session {
       z.object({
         sessionID: z.string().optional(),
         error: MessageV2.Assistant.shape.error,
+      }),
+    ),
+    DirectoryChanged: BusEvent.define(
+      "session.directory_changed",
+      z.object({
+        sessionID: z.string(),
+        from: z.object({
+          directory: z.string(),
+          projectID: z.string(),
+        }),
+        to: z.object({
+          directory: z.string(),
+          projectID: z.string(),
+        }),
+        actor: z.enum(["user", "agent"]),
+        reason: z.string().optional(),
       }),
     ),
   }
@@ -435,6 +453,161 @@ export namespace Session {
         Database.effect(() => Bus.publish(Event.Updated, { info }))
         return info
       })
+    },
+  )
+
+  export const DirectoryHistoryEntry = z
+    .object({
+      id: z.string(),
+      sessionID: z.string(),
+      from: z
+        .object({
+          directory: z.string().nullable(),
+          projectID: z.string().nullable(),
+        })
+        .optional(),
+      to: z.object({
+        directory: z.string(),
+        projectID: z.string(),
+      }),
+      actor: z.enum(["user", "agent"]),
+      reason: z.string().optional(),
+      time: z.object({
+        created: z.number(),
+      }),
+    })
+    .meta({
+      ref: "SessionDirectoryHistoryEntry",
+    })
+  export type DirectoryHistoryEntry = z.output<typeof DirectoryHistoryEntry>
+
+  export const directoryHistory = fn(Identifier.schema("session"), async (sessionID) => {
+    const rows = Database.use((db) =>
+      db
+        .select()
+        .from(SessionDirectoryHistoryTable)
+        .where(eq(SessionDirectoryHistoryTable.session_id, sessionID))
+        .orderBy(asc(SessionDirectoryHistoryTable.time_created))
+        .all(),
+    )
+    return rows.map<DirectoryHistoryEntry>((row) => ({
+      id: row.id,
+      sessionID: row.session_id,
+      from:
+        row.from_directory || row.from_project_id
+          ? {
+              directory: row.from_directory,
+              projectID: row.from_project_id,
+            }
+          : undefined,
+      to: {
+        directory: row.to_directory,
+        projectID: row.to_project_id,
+      },
+      actor: row.actor === "agent" ? "agent" : "user",
+      reason: row.reason ?? undefined,
+      time: { created: row.time_created },
+    }))
+  })
+
+  /**
+   * Switch the working directory for an active session.
+   * Validates the path, derives a target Project, optionally moves the session
+   * to that project, records the change in `session_directory_history`, and
+   * appends a synthetic system text part so future LLM turns see the change.
+   *
+   * Note: this updates the persisted session row but does NOT swap the
+   * Instance singleton — server callers should additionally invoke
+   * `Instance.switchDirectory(...)` so that LSP, watchers, plugins, MCP, etc.
+   * retarget the new directory.
+   */
+  export const changeDirectory = fn(
+    z.object({
+      sessionID: Identifier.schema("session"),
+      directory: z.string(),
+      actor: z.enum(["user", "agent"]),
+      reason: z.string().optional(),
+    }),
+    async (input) => {
+      const session = await get(input.sessionID)
+      if (session.time.compacting) {
+        throw new Error("Cannot change directory while session is compacting")
+      }
+
+      const { project } = await Project.fromDirectory(input.directory)
+      // Project.fromDirectory normalizes the directory to its resolved form.
+      const target = path.resolve(input.directory)
+
+      if (session.directory === target && session.projectID === project.id) {
+        log.info("changeDirectory noop", { sessionID: input.sessionID, target })
+        return { session, project, history: undefined as DirectoryHistoryEntry | undefined }
+      }
+
+      const previous = {
+        directory: session.directory,
+        projectID: session.projectID,
+      }
+
+      const historyID = Identifier.ascending("part")
+      const now = Date.now()
+
+      const updated = Database.use((db) => {
+        const row = db
+          .update(SessionTable)
+          .set({
+            directory: target,
+            project_id: project.id,
+            time_updated: now,
+          })
+          .where(eq(SessionTable.id, input.sessionID))
+          .returning()
+          .get()
+        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+        db.insert(SessionDirectoryHistoryTable)
+          .values({
+            id: historyID,
+            session_id: input.sessionID,
+            from_directory: previous.directory,
+            from_project_id: previous.projectID,
+            to_directory: target,
+            to_project_id: project.id,
+            actor: input.actor,
+            reason: input.reason,
+            time_created: now,
+          })
+          .run()
+        return fromRow(row)
+      })
+
+      // Best-effort: keep the prior cwd reachable as a sandbox of its old project.
+      if (previous.projectID && previous.directory && previous.projectID !== project.id) {
+        await Project.addSandbox(previous.projectID, previous.directory).catch((error) => {
+          log.warn("failed to record old directory as sandbox", { error })
+        })
+      }
+
+      Database.effect(() => {
+        Bus.publish(Event.Updated, { info: updated })
+        Bus.publish(Event.DirectoryChanged, {
+          sessionID: input.sessionID,
+          from: previous,
+          to: { directory: target, projectID: project.id },
+          actor: input.actor,
+          reason: input.reason,
+        })
+      })
+
+      const history: DirectoryHistoryEntry = {
+        id: historyID,
+        sessionID: input.sessionID,
+        from: { directory: previous.directory, projectID: previous.projectID },
+        to: { directory: target, projectID: project.id },
+        actor: input.actor,
+        reason: input.reason,
+        time: { created: now },
+      }
+
+      return { session: updated, project, history }
     },
   )
 

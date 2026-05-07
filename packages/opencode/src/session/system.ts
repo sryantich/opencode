@@ -1,6 +1,8 @@
 import { Ripgrep } from "../file/ripgrep"
 
 import { Instance } from "../project/instance"
+import { Database, eq, asc } from "@/storage/db"
+import { SessionDirectoryHistoryTable } from "./directory-history.sql"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_ANTHROPIC_WITHOUT_TODO from "./prompt/qwen.txt"
@@ -26,8 +28,36 @@ export namespace SystemPrompt {
     return [PROMPT_ANTHROPIC_WITHOUT_TODO]
   }
 
-  export async function environment(model: Provider.Model) {
+  function directoryHistorySection(sessionID?: string) {
+    if (!sessionID) return ""
+    const rows = Database.use((db) =>
+      db
+        .select()
+        .from(SessionDirectoryHistoryTable)
+        .where(eq(SessionDirectoryHistoryTable.session_id, sessionID))
+        .orderBy(asc(SessionDirectoryHistoryTable.time_created))
+        .all(),
+    )
+    if (rows.length === 0) return ""
+    const lines = rows.map((row) => {
+      const when = new Date(row.time_created).toISOString()
+      const reason = row.reason ? ` — ${row.reason}` : ""
+      const fromDir = row.from_directory ?? "<unknown>"
+      return `  [${when}] ${row.actor}: ${fromDir} \u2192 ${row.to_directory}${reason}`
+    })
+    return [
+      `<directory_history>`,
+      `  The working directory has changed during this session. Earlier turns may`,
+      `  refer to files relative to a previous directory. Be cautious before`,
+      `  assuming files are missing — they may live in one of the prior paths below.`,
+      ...lines,
+      `</directory_history>`,
+    ].join("\n")
+  }
+
+  export async function environment(model: Provider.Model, sessionID?: string) {
     const project = Instance.project
+    const history = directoryHistorySection(sessionID)
     return [
       [
         `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,
@@ -48,6 +78,7 @@ export namespace SystemPrompt {
             : ""
         }`,
         `</directories>`,
+        ...(history ? [history] : []),
       ].join("\n"),
     ]
   }

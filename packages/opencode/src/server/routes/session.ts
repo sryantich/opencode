@@ -3,6 +3,7 @@ import { stream } from "hono/streaming"
 import { describeRoute, validator, resolver } from "hono-openapi"
 import z from "zod"
 import { Session } from "../../session"
+import { Instance } from "../../project/instance"
 import { MessageV2 } from "../../session/message-v2"
 import { SessionPrompt } from "../../session/prompt"
 import { SessionCompaction } from "../../session/compaction"
@@ -285,6 +286,81 @@ export const SessionRoutes = lazy(() =>
         }
 
         return c.json(session)
+      },
+    )
+    .post(
+      "/:sessionID/directory",
+      describeRoute({
+        summary: "Switch session working directory",
+        description:
+          "Switch the working directory for an active session. Validates the path, optionally re-parents the session under a different project, and records the change in the session's directory history. The active Instance is reloaded so LSP, file watchers, plugins, and tools retarget the new directory.",
+        operationId: "session.changeDirectory",
+        responses: {
+          200: {
+            description: "Directory was switched",
+            content: {
+              "application/json": {
+                schema: resolver(Session.Info),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string().meta({ description: "Session ID" }),
+        }),
+      ),
+      validator(
+        "json",
+        z.object({
+          directory: z.string().meta({ description: "Absolute or relative path to switch to" }),
+          reason: z.string().optional().meta({ description: "Optional human-readable explanation" }),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const body = c.req.valid("json")
+        const result = await Session.changeDirectory({
+          sessionID,
+          directory: body.directory,
+          actor: "user",
+          reason: body.reason,
+        })
+        await Instance.switchDirectory(body.directory)
+        return c.json(result.session)
+      },
+    )
+    .get(
+      "/:sessionID/directory/history",
+      describeRoute({
+        summary: "List session directory history",
+        description: "Return the ordered history of working-directory changes for a session.",
+        operationId: "session.directoryHistory",
+        responses: {
+          200: {
+            description: "List of directory changes",
+            content: {
+              "application/json": {
+                schema: resolver(Session.DirectoryHistoryEntry.array()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: z.string().meta({ description: "Session ID" }),
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const entries = await Session.directoryHistory(sessionID)
+        return c.json(entries)
       },
     )
     .post(
