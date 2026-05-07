@@ -28,7 +28,7 @@ export namespace SystemPrompt {
     return [PROMPT_ANTHROPIC_WITHOUT_TODO]
   }
 
-  function directoryHistorySection(sessionID?: string) {
+  function historySection(sessionID?: string) {
     if (!sessionID) return ""
     const rows = Database.use((db) =>
       db
@@ -57,7 +57,7 @@ export namespace SystemPrompt {
 
   export async function environment(model: Provider.Model, sessionID?: string) {
     const project = Instance.project
-    const history = directoryHistorySection(sessionID)
+    const history = historySection(sessionID)
     return [
       [
         `You are powered by the model named ${model.api.id}. The exact model ID is ${model.providerID}/${model.api.id}`,

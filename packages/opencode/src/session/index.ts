@@ -548,7 +548,7 @@ export namespace Session {
         projectID: session.projectID,
       }
 
-      const historyID = Identifier.ascending("part")
+      const historyID = Identifier.ascending("directory_history")
       const now = Date.now()
 
       const updated = Database.use((db) => {

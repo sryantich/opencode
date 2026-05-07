@@ -31,11 +31,11 @@ export const ChangeDirectoryTool = Tool.define("change_directory", {
       throw new Error(`Path is not a directory: ${target}`)
     }
 
-    const glob = path.join(target, "**").replaceAll("\\", "/")
+    const pattern = path.join(target, "**").replaceAll("\\", "/")
     await ctx.ask({
       permission: "project.directory_switch",
-      patterns: [glob],
-      always: [glob],
+      patterns: [pattern],
+      always: [pattern],
       metadata: {
         directory: target,
         reason: params.reason,
