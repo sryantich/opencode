@@ -27,7 +27,9 @@ import { ConfigAgent } from "./agent"
 import { ConfigAttachment } from "./attachment"
 import { ConfigCommand } from "./command"
 import { ConfigFormatter } from "./formatter"
+import { ConfigHook } from "./hook"
 import { ConfigLayout } from "./layout"
+import { ConfigLoop } from "./loop"
 import { ConfigLSP } from "./lsp"
 import { ConfigManaged } from "./managed"
 import { ConfigMCP } from "./mcp"
@@ -161,6 +163,9 @@ export const Info = Schema.Struct({
   }),
   // User-facing plugin config is stored as Specs; provenance gets attached later while configs are merged.
   plugin: Schema.optional(Schema.mutable(Schema.Array(ConfigPlugin.Spec))),
+  hook: Schema.optional(ConfigHook.Info).annotate({
+    description: "Shell commands to run on lifecycle events, see https://opencode.ai/docs/hooks",
+  }),
   share: Schema.optional(Schema.Literals(["manual", "auto", "disabled"])).annotate({
     description:
       "Control sharing behavior:'manual' allows manual sharing via commands, 'auto' enables automatic sharing, 'disabled' disables all sharing",
@@ -297,6 +302,9 @@ export const Info = Schema.Struct({
       }),
       continue_loop_on_deny: Schema.optional(Schema.Boolean).annotate({
         description: "Continue the agent loop when a tool call is denied",
+      }),
+      loop: Schema.optional(ConfigLoop.Info).annotate({
+        description: "Autonomous goal loop: keep re-prompting the agent until a completion marker is reached",
       }),
       mcp_timeout: Schema.optional(PositiveInt).annotate({
         description: "Timeout in milliseconds for model context protocol (MCP) requests",

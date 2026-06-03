@@ -1,0 +1,96 @@
+---
+title: Hooks
+description: Run shell commands on lifecycle events and let the agent loop autonomously.
+---
+
+Hooks let you run shell commands at specific points in a session without writing a [plugin](/docs/plugins). They are configured directly in your `opencode.json`. The autonomous loop lets the agent keep working toward a goal across multiple turns until it signals completion.
+
+---
+
+## Shell hooks
+
+Configure hooks under the top-level `hook` key. Each event maps to a list of entries, and each entry runs a command.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "hook": {
+    "tool.execute.after": [
+      {
+        "matcher": "edit|write",
+        "command": ["./scripts/format.sh"]
+      }
+    ],
+    "session.idle": [
+      {
+        "command": "notify-send 'opencode is waiting for you'"
+      }
+    ]
+  }
+}
+```
+
+### Events
+
+| Event                 | When it runs                                | Matcher |
+| --------------------- | ------------------------------------------- | ------- |
+| `tool.execute.before` | Before a tool runs                          | Yes     |
+| `tool.execute.after`  | After a tool finishes                       | Yes     |
+| `chat.message`        | When a user message is submitted            | No      |
+| `session.start`       | When a session is created                   | No      |
+| `session.idle`        | When the agent stops and waits for the user | No      |
+
+### Entry options
+
+| Field         | Type                   | Description                                                                   |
+| ------------- | ---------------------- | ----------------------------------------------------------------------------- |
+| `command`     | `string` or `string[]` | A shell string (run via `sh -c`) or an argv array (run directly).             |
+| `matcher`     | `string`               | Optional regular expression tested against the tool name for `tool.*` events. |
+| `environment` | `object`               | Extra environment variables set when running the command.                     |
+| `timeout`     | `number`               | Maximum time in milliseconds before the command is killed.                    |
+
+### Payload and environment
+
+Every hook receives a JSON payload on `stdin` describing the event, plus a few convenience environment variables:
+
+- `OPENCODE_HOOK_EVENT` — the event name.
+- `OPENCODE_TOOL` — the tool name (for `tool.*` events).
+- `OPENCODE_SESSION_ID` — the current session id.
+
+### Influencing the run
+
+A hook can emit a JSON object on `stdout` to feed data back into the run:
+
+- `tool.execute.before` — `{ "args": { ... } }` replaces the tool's arguments.
+- `tool.execute.after` — `{ "title": "...", "output": "..." }` overrides the tool result.
+
+Non-zero exit codes are logged but do not abort the session.
+
+---
+
+## Autonomous loop
+
+Normally the agent stops as soon as it produces a response without pending tool calls. The autonomous loop keeps re-prompting the agent until it signals completion or hits an iteration cap. Enable it under `experimental.loop`.
+
+```json title="opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "experimental": {
+    "loop": {
+      "max_iterations": 25,
+      "until": "GOAL_COMPLETE",
+      "prompt": "Continue working toward the goal. When everything is done, respond with exactly: GOAL_COMPLETE"
+    }
+  }
+}
+```
+
+### Options
+
+| Field            | Type     | Default | Description                                                                         |
+| ---------------- | -------- | ------- | ----------------------------------------------------------------------------------- |
+| `max_iterations` | `number` | `10`    | Maximum number of autonomous continuations before the loop stops.                   |
+| `until`          | `string` | —       | When the agent's final response contains this marker, the loop completes and stops. |
+| `prompt`         | `string` | —       | Message injected to nudge the agent to continue on each iteration.                  |
+
+On each iteration the loop injects the continuation `prompt` as a new user message, so the agent picks up where it left off. The loop always stops once `max_iterations` is reached, even if the marker never appears.

@@ -31,6 +31,7 @@ import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { SessionProcessor } from "./processor"
+import { Loop } from "./loop"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
 import { SessionStatus } from "./status"
@@ -1248,6 +1249,8 @@ export const layer = Layer.effect(
         const slog = elog.with({ sessionID })
         let structured: unknown
         let step = 0
+        // Autonomous loop continuations performed so far this run.
+        let loopIteration = 0
         const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
@@ -1289,6 +1292,32 @@ export const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
+
+            // Autonomous goal loop: when enabled, keep re-prompting the agent
+            // after it would normally stop, until the completion marker appears
+            // or the iteration cap is reached.
+            const loopConfig = (yield* config.get()).experimental?.loop
+            if (loopConfig && !orphan) {
+              const lastText =
+                lastAssistantMsg?.parts
+                  .filter((part): part is Extract<SessionLegacy.Part, { type: "text" }> => part.type === "text")
+                  .map((part) => part.text)
+                  .join("\n") ?? ""
+              const decision = Loop.decide({ config: loopConfig, iteration: loopIteration, lastText })
+              if (decision.action === "continue") {
+                loopIteration++
+                yield* slog.info("autonomous loop continue", { iteration: loopIteration })
+                yield* createUserMessage({
+                  sessionID,
+                  parts: [{ type: "text", text: decision.prompt, synthetic: true }],
+                  agent: lastUser.agent,
+                  model: { providerID: lastUser.model.providerID, modelID: lastUser.model.modelID },
+                }).pipe(Effect.orDie)
+                continue
+              }
+              yield* slog.info("autonomous loop stop", { reason: decision.reason, iteration: loopIteration })
+            }
+
             yield* slog.info("exiting loop")
             break
           }

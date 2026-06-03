@@ -29,6 +29,7 @@ import { registerAdapter } from "@/control-plane/adapters"
 import type { WorkspaceAdapter } from "@/control-plane/types"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Hook } from "@/hook"
 import { InstallationChannel } from "@opencode-ai/core/installation/version"
 
 const log = Log.create({ service: "plugin" })
@@ -243,6 +244,12 @@ export const layer = Layer.effect(
               return Effect.void
             }),
           )
+        }
+
+        // Config-defined shell hooks run after code plugins, sharing the same
+        // dispatch path (trigger + event hook).
+        if (cfg.hook && Object.keys(cfg.hook).length > 0) {
+          hooks.push(Hook.fromConfig({ hooks: cfg.hook, cwd: ctx.directory }))
         }
 
         // Notify plugins of current config

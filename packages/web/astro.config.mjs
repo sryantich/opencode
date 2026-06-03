@@ -265,6 +265,7 @@ export default defineConfig({
             "acp",
             "skills",
             "custom-tools",
+            "hooks",
           ],
         },
 
